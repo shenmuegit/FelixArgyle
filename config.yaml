@@ -1,0 +1,37 @@
+# Nginx IP监控配置文件
+nginx_log_path: "access.log"
+nginx_log_format: "custom"
+
+# 需要监控的路径列表
+monitor_paths:
+  - "/path"
+
+# 访问次数阈值（达到此次数将被封禁）
+threshold: 10
+
+# 时间窗口（秒），在此时间内达到阈值将触发封禁
+threshold_duration: 288000
+
+# 黑名单输出文件路径
+blacklist_file: "ip_blacklist.conf"
+
+# 白名单文件路径
+whitelist_file: "whitelist.txt"
+
+# 封禁信息持久化文件路径
+blocked_ips_info_file: "blocked_ips_info.json"
+
+# 访问统计持久化文件路径
+ip_interface_stats_file: "ip_interface_stats.json"
+
+# 检查间隔（秒）
+check_interval: 10
+
+# 企业微信webhook URL（可选）
+wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
+
+# 日志级别: DEBUG, INFO, WARNING, ERROR, CRITICAL (默认为DEBUG)
+log_level: "INFO"
+
+# 日志文件路径（默认为nginx_monitor.log）
+log_file: "nginx_monitor.log"
