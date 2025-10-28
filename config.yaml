@@ -1,16 +1,18 @@
 # Nginx IP监控配置文件
-nginx_log_path: "access.log"
+nginx_log_path: "/var/log/nginx/access.log"
 nginx_log_format: "custom"
+# nginx日志位置
+last_position: 0
 
 # 需要监控的路径列表
 monitor_paths:
-  - "/path"
+  - "{path}"
 
 # 访问次数阈值（达到此次数将被封禁）
 threshold: 10
 
 # 时间窗口（秒），在此时间内达到阈值将触发封禁
-threshold_duration: 288000
+threshold_duration: 28800
 
 # 黑名单输出文件路径
 blacklist_file: "ip_blacklist.conf"

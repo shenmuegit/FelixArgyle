@@ -73,6 +73,7 @@ class NginxLogMonitor:
         self.blocked_ips_info = {}  # 存储所有被封禁IP的详细信息
         self.current_period_blocked = []  # 存储本周期新增的封禁IP
         self.ip_interface_stats = defaultdict(lambda: defaultdict(int))  # 存储IP+接口的访问统计
+        self.total_lines_read = 0  # 存储已读取的总行数
         
         self.load_config()
         self.load_whitelist()
@@ -199,6 +200,51 @@ class NginxLogMonitor:
             logger.debug(f"访问统计已保存到: {stats_file}")
         except Exception as e:
             logger.error(f"保存访问统计失败: {e}")
+    
+    def load_log_position(self):
+        """从config.yaml加载日志文件读取行数"""
+        lines_read = self.config.get('last_position', 0)  # 现在记录的是行数
+        log_file = self.config.get('nginx_log_path', '')
+        if lines_read > 0:
+            logger.info(f"从配置文件加载日志行数: {lines_read} 行 (文件: {log_file})")
+            self.total_lines_read = lines_read
+        else:
+            logger.info("配置文件未设置日志位置，从文件开头开始读取")
+    
+    def save_log_position(self, position):
+        """保存日志文件读取行数到config.yaml（保持文件结构不变）"""
+        try:
+            # 不接收position参数，直接使用total_lines_read
+            # 读取原始配置文件内容
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # 更新配置内存中的数据（只保存行数，不保存字节数）
+            self.config['last_position'] = self.total_lines_read
+            
+            # 使用正则表达式替换 last_position 的值，保持其他内容不变
+            import re
+            pattern = r'^(last_position:\s*)\d+(\s*)$'
+            replacement = f'\\g<1>{self.total_lines_read}\\g<2>'
+            new_content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
+            
+            # 如果找不到 last_position 字段，在文件开头添加
+            if new_content == content and 'last_position' not in content:
+                lines = content.split('\n')
+                # 在 nginx_log_format 行后插入
+                for i, line in enumerate(lines):
+                    if 'nginx_log_format:' in line:
+                        lines.insert(i + 1, f'last_position: {self.total_lines_read}')
+                        break
+                new_content = '\n'.join(lines)
+            
+            # 写入配置文件
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+            
+            logger.debug(f"日志行数已保存到配置文件: {self.total_lines_read} 行")
+        except Exception as e:
+            logger.error(f"保存日志位置失败: {e}")
     
     def get_ip_location(self, ip):
         """获取IP归属地"""
@@ -418,6 +464,8 @@ class NginxLogMonitor:
         """输出周期统计信息"""
         # 保存统计信息
         self.save_ip_interface_stats()
+        # 保存日志读取位置（只保存行数）
+        self.save_log_position(0)
         
         # 统计本周期访问的IP（从新日志中提取）
         period_ips = set()
@@ -503,8 +551,8 @@ class NginxLogMonitor:
         
         logger.info(f"开始监控日志文件: {log_path}")
         
-        # 记录文件最后读取位置
-        last_position = 0
+        # 加载日志文件最后读取行数
+        self.load_log_position()
         
         if Path(log_path).exists():
             file_size = Path(log_path).stat().st_size
@@ -516,12 +564,14 @@ class NginxLogMonitor:
                 loop_count += 1
                 logger.debug(f"监控循环 #{loop_count}")
                 
-                # 读取新增的日志内容
+                # 读取新增的日志内容（从已读取的行数之后开始）
                 with open(log_path, 'r', encoding='utf-8') as f:
-                    logger.debug(f"last_position: {last_position}")
-                    f.seek(last_position)
+                    # 跳过已读取的行数
+                    for i in range(self.total_lines_read):
+                        f.readline()
+                    # 读取剩余的所有新行
                     new_lines = f.readlines()
-                    last_position = f.tell()
+                    self.total_lines_read += len(new_lines)  # 更新已读取行数
                 if new_lines:
                     logger.debug(f"读取到 {len(new_lines)} 条新日志")
                 # 处理新增的日志行
@@ -565,7 +615,7 @@ class NginxLogMonitor:
                 if processed_count > 0:
                     logger.info(f"本周期处理了 {processed_count} 条日志")
                 
-                # 输出周期统计
+                # 输出周期统计（保存日志位置）
                 self.log_period_statistics(processed_count, new_lines)
                 
                 time.sleep(check_interval)
@@ -576,6 +626,7 @@ class NginxLogMonitor:
                 try:
                     self.save_ip_interface_stats()
                     self.save_blocked_ips_info()
+                    self.save_log_position(0)
                 except:
                     pass
                 time.sleep(check_interval)
@@ -600,11 +651,13 @@ class NginxLogMonitor:
             # 保存数据
             self.save_ip_interface_stats()
             self.save_blocked_ips_info()
+            self.save_log_position(0)
         except Exception as e:
             logger.error(f"程序异常: {e}", exc_info=True)
             # 保存数据
             self.save_ip_interface_stats()
             self.save_blocked_ips_info()
+            self.save_log_position(0)
 
 
 def main():
