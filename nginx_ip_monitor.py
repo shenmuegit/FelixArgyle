@@ -74,6 +74,7 @@ class NginxLogMonitor:
         self.current_period_blocked = []  # 存储本周期新增的封禁IP
         self.ip_interface_stats = defaultdict(lambda: defaultdict(int))  # 存储IP+接口的访问统计
         self.total_lines_read = 0  # 存储已读取的总行数
+        self.last_report_date = None  # 记录上次发送报告的日期
         
         self.load_config()
         self.load_whitelist()
@@ -210,6 +211,24 @@ class NginxLogMonitor:
             self.total_lines_read = lines_read
         else:
             logger.info("配置文件未设置日志位置，从文件开头开始读取")
+        
+        # 验证位置是否超过文件实际行数
+        if log_file and Path(log_file).exists():
+            actual_lines = self.get_file_line_count(log_file)
+            if self.total_lines_read >= actual_lines and actual_lines > 0:
+                logger.warning(f"配置中的日志位置 {self.total_lines_read} 超过文件行数 {actual_lines}，重置为0")
+                self.total_lines_read = 0
+    
+    def get_file_line_count(self, file_path):
+        """统计文件总行数"""
+        try:
+            if not Path(file_path).exists():
+                return 0
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return sum(1 for _ in f)
+        except Exception as e:
+            logger.error(f"统计文件行数失败 {file_path}: {e}")
+            return 0
     
     def save_log_position(self, position):
         """保存日志文件读取行数到config.yaml（保持文件结构不变）"""
@@ -242,7 +261,7 @@ class NginxLogMonitor:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 f.write(new_content)
             
-            logger.debug(f"日志行数已保存到配置文件: {self.total_lines_read} 行")
+            logger.info(f"日志行数已保存到配置文件: {self.total_lines_read} 行")
         except Exception as e:
             logger.error(f"保存日志位置失败: {e}")
     
@@ -460,6 +479,82 @@ class NginxLogMonitor:
         """检查IP是否已经在黑名单中"""
         return ip in self.blacklist_ips
     
+    def generate_daily_report_markdown(self):
+        """生成每日报告markdown内容"""
+        if not hasattr(self, 'last_statistics') or not self.last_statistics:
+            return ""
+        
+        stats = self.last_statistics
+        report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        content = f"# Nginx IP监控每日统计报告\n\n"
+        content += f"**报告时间：** {report_time}\n\n"
+        content += f"## 累计统计\n\n"
+        content += f"**累计总封禁IP数量：** {stats['total_blocked_count']}\n\n"
+        content += f"**累计总访问次数：** {stats['total_accesses']}\n\n"
+        
+        content += f"## 累计访问次数>=10的前20个IP+接口组合\n\n"
+        if stats['top_20_combinations']:
+            content += "| 序号 | IP地址 | 接口路径 | 访问次数 |\n"
+            content += "|------|--------|----------|----------|\n"
+            for idx, (ip, path, count) in enumerate(stats['top_20_combinations'], 1):
+                content += f"| {idx} | `{ip}` | `{path}` | {count} |\n"
+        else:
+            content += "无\n"
+        
+        content += f"\n## 黑名单IP列表\n\n"
+        if stats['blacklist_ips']:
+            content += "```\n"
+            content += ", ".join(stats['blacklist_ips'])
+            content += "\n```\n"
+        else:
+            content += "无\n"
+        
+        content += f"\n## 白名单IP列表\n\n"
+        if stats['whitelist_ips']:
+            content += "```\n"
+            content += ", ".join(stats['whitelist_ips'])
+            content += "\n```\n"
+        else:
+            content += "无\n"
+        
+        return content
+    
+    def send_daily_report(self):
+        """发送每日报告到企业微信"""
+        if 'wechat_webhook_url' not in self.config or not self.config['wechat_webhook_url']:
+            logger.debug("未配置企业微信webhook URL，跳过每日报告")
+            return
+        
+        content = self.generate_daily_report_markdown()
+        if not content:
+            logger.warning("统计结果为空，跳过每日报告发送")
+            return
+        
+        # 构建企业微信消息
+        message = {
+            "msgtype": "markdown_v2",
+            "markdown_v2": {
+                "content": content
+            }
+        }
+        
+        logger.info("正在发送每日统计报告到企业微信")
+        logger.debug(f"报告内容: {json.dumps(message, ensure_ascii=False)}")
+        
+        try:
+            response = requests.post(
+                self.config['wechat_webhook_url'],
+                json=message,
+                timeout=10
+            )
+            if response.status_code == 200:
+                logger.info("每日统计报告已成功发送到企业微信")
+            else:
+                logger.error(f"每日统计报告发送失败: {response.text}")
+        except Exception as e:
+            logger.error(f"每日统计报告发送异常: {e}")
+    
     def log_period_statistics(self, processed_count, new_lines):
         """输出周期统计信息"""
         # 保存统计信息
@@ -477,6 +572,25 @@ class NginxLogMonitor:
         
         # 总访问次数统计
         total_accesses = sum(sum(paths.values()) for paths in self.ip_interface_stats.values())
+        
+        # 计算累计访问次数>=10的前20个IP+接口组合
+        all_combinations = []
+        for ip, paths in self.ip_interface_stats.items():
+            for path, count in paths.items():
+                if count >= 10:  # 只收集访问次数>=10的
+                    all_combinations.append((ip, path, count))
+        all_combinations.sort(key=lambda x: x[2], reverse=True)
+        top_20_combinations = all_combinations[:20]
+        
+        # 保存统计结果到实例变量
+        self.last_statistics = {
+            'processed_count': processed_count,
+            'total_accesses': total_accesses,
+            'total_blocked_count': len(self.blocked_ips_info),
+            'top_20_combinations': top_20_combinations,
+            'blacklist_ips': sorted(list(self.blacklist_ips)),
+            'whitelist_ips': sorted(list(self.whitelist_ips))
+        }
         
         logger.info("=" * 80)
         logger.info(f"[周期统计] 处理日志行数: {processed_count}")
@@ -564,6 +678,19 @@ class NginxLogMonitor:
                 loop_count += 1
                 logger.debug(f"监控循环 #{loop_count}")
                 
+                # 检测日志文件轮转：检查读取位置是否超过文件实际行数
+                actual_lines = self.get_file_line_count(log_path)
+                logger.info(f"日志文件总行数: {actual_lines}, 已读取行数: {self.total_lines_read}")
+                if self.total_lines_read >= actual_lines and actual_lines > 0:
+                    # 记录清理前的IP数量（用于日志）
+                    ip_count_before = len(self.ip_access_records)
+                    logger.warning(f"日志位置 {self.total_lines_read} 超过文件行数 {actual_lines}，检测到日志轮转，重置读取位置为0并清理访问记录")
+                    self.total_lines_read = 0
+                    # 清理所有IP的访问记录，避免旧时间戳干扰判断
+                    self.ip_access_records.clear()
+                    logger.info(f"已清理所有IP访问记录，共清理 {ip_count_before} 个IP的记录")
+                logger.debug(f"日志文件总行数: {actual_lines}, 已读取行数: {self.total_lines_read}")
+                
                 # 读取新增的日志内容（从已读取的行数之后开始）
                 with open(log_path, 'r', encoding='utf-8') as f:
                     # 跳过已读取的行数
@@ -617,6 +744,16 @@ class NginxLogMonitor:
                 
                 # 输出周期统计（保存日志位置）
                 self.log_period_statistics(processed_count, new_lines)
+                
+                # 检查是否需要发送每日报告（每天早上8点）
+                current_time = datetime.now()
+                current_date = current_time.date()
+                current_hour = current_time.hour
+                
+                if current_hour == 8 and self.last_report_date != current_date:
+                    self.send_daily_report()
+                    self.last_report_date = current_date
+                    logger.info(f"已发送每日统计报告: {current_date}")
                 
                 time.sleep(check_interval)
                 

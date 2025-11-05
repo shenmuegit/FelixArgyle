@@ -2,7 +2,7 @@
 nginx_log_path: "/var/log/nginx/access.log"
 nginx_log_format: "custom"
 # nginx日志位置
-last_position: 0
+d: 0
 
 # 需要监控的路径列表
 monitor_paths:
