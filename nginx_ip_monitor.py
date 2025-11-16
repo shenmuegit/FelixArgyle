@@ -292,7 +292,7 @@ class NginxLogMonitor:
         
         if nginx_format == "custom":
             # 自定义格式正则
-            pattern = r'^(\S+) - \S+ \[(.*?)\] "(.+?)" (\d+) \d+ ".*?" ".*?" Host: ".*?" Request_URI: "(.+?)" Domain: ".*?" Headers: ".*?" ".*?" Upstream: ".*?"'
+            pattern = r'^(\S+) - \S+ \[(.*?)\] "(.+?)" (\d+) \d+ ".*?" ".*?" Host: ".*?" Request_URI: "(.+?)" Domain: ".*?" Headers: ".*?" ".*?"Upstream: ".*?"'
             match = re.match(pattern, line)
             if match:
                 ip = match.group(1)
